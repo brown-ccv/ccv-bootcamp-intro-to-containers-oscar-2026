@@ -1,4 +1,4 @@
-# Introduction to Reproducible Research with Containers on OSCAR
+# Introduction to Using Containers on OSCAR
 
 **CCV BootCamp 2026**
 **Ashok Ragavendran**
