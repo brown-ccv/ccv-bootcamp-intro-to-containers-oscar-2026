@@ -484,6 +484,83 @@ apptainer exec --nv /oscar/data/yourlab/mycontainer.sif python train.py
 <li><code>docker system prune</code> — reclaim disk space</li>
 <li><code>docker image rm &lt;image&gt;</code> — delete a local image</li>
 </ul></div></section>
+<section class="slide slide-content"><div class="slide-inner"><h2>Gotchas: Docker vs. Apptainer at runtime</h2>
+<p>Same OCI image format — but very different runtime models.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Docker</th>
+<th>Apptainer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Runs as</td>
+<td>root (remapped)</td>
+<td><strong>your</strong> UID/GID</td>
+</tr>
+<tr>
+<td><code>/usr/lib</code>, <code>/usr/lib64</code></td>
+<td>isolated</td>
+<td><strong>injected from host</strong></td>
+</tr>
+<tr>
+<td><code>$HOME</code></td>
+<td>isolated</td>
+<td><strong>mounted from host</strong></td>
+</tr>
+<tr>
+<td><code>/tmp</code></td>
+<td>isolated</td>
+<td>shared with host</td>
+</tr>
+<tr>
+<td>Environment variables</td>
+<td>isolated</td>
+<td><strong>inherited from shell</strong></td>
+</tr>
+</tbody>
+</table>
+<p>These differences exist by design — Apptainer is built for multi-user HPC. But they can cause <strong>silent, hard-to-debug conflicts</strong> when you convert a Docker image.</p></div></section>
+<section class="slide slide-content"><div class="slide-inner"><h2>Gotcha 1: system library conflicts</h2>
+<p>Apptainer injects the host's <code>/usr/lib</code> and <code>/usr/lib64</code> so containers can use OSCAR's NVIDIA drivers and MPI stack. When the container's own libraries differ from the host versions you get:</p>
+<pre><code>/usr/lib64/libstdc++.so.6: version 'GLIBCXX_3.4.29' not found
+symbol lookup error: undefined symbol: ...
+</code></pre>
+<p><strong>Fixes:</strong></p>
+<pre><code class="language-bash"># Run with a clean environment — no host library injection
+apptainer exec --cleanenv mycontainer.sif python train.py
+
+# Docker-compatibility mode — disables automatic /usr bind
+apptainer exec --compat mycontainer.sif python train.py
+
+# Need GPU but still hitting conflicts? Combine flags
+apptainer exec --nv --cleanenv mycontainer.sif python train.py
+</code></pre></div></section>
+<section class="slide slide-content"><div class="slide-inner"><h2>Gotcha 2: your <code>$HOME</code> bleeds in</h2>
+<p>Apptainer mounts your real home directory into the container by default. Things on the <strong>host</strong> that silently override what's in the image:</p>
+<ul>
+<li><code>~/.bashrc</code>, <code>~/.bash_profile</code> — your shell config activates inside</li>
+<li><code>~/.local/lib/python3.x/</code> — <code>pip install --user</code> packages take priority over the container's site-packages</li>
+<li><code>~/.conda</code> / <code>~/.bashrc</code> conda init — can activate a host environment and shadow the container's Python entirely</li>
+<li><code>~/.config/matplotlib</code>, <code>~/.jupyter</code>, etc. — tool configs from the host bleed in</li>
+</ul>
+<p>Two users running the <strong>same <code>.sif</code></strong> can get different results because their home directories differ.</p></div></section>
+<section class="slide slide-content"><div class="slide-inner"><h2>Fixing <code>$HOME</code> conflicts</h2>
+<pre><code class="language-bash"># Don't mount $HOME at all
+apptainer exec --no-home mycontainer.sif python train.py
+
+# Mount a clean scratch directory as $HOME instead
+apptainer exec --home /oscar/scratch/$USER/container_home \
+    mycontainer.sif python train.py
+
+# Maximum isolation — closest to Docker's default behaviour
+apptainer exec --no-home --cleanenv mycontainer.sif python train.py
+</code></pre>
+<blockquote>
+<p><strong>Rule of thumb:</strong> start with <code>--no-home --cleanenv</code> for reproducibility, then add back only the <code>--bind</code> paths and environment variables your workflow actually needs.</p>
+</blockquote></div></section>
 <section class="slide slide-content"><div class="slide-inner"><h2>Thank you!</h2>
 <p>Questions? Find us at <strong>office hours</strong>, on <strong><code>ccv-share</code></strong> Slack, or <strong>support@ccv.brown.edu</strong></p>
 <ul>

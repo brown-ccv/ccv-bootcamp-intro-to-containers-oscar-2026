@@ -306,6 +306,77 @@ apptainer exec --nv /oscar/data/yourlab/mycontainer.sif python train.py
 
 ---
 
+## Gotchas: Docker vs. Apptainer at runtime
+
+Same OCI image format — but very different runtime models.
+
+| | Docker | Apptainer |
+|---|---|---|
+| Runs as | root (remapped) | **your** UID/GID |
+| `/usr/lib`, `/usr/lib64` | isolated | **injected from host** |
+| `$HOME` | isolated | **mounted from host** |
+| `/tmp` | isolated | shared with host |
+| Environment variables | isolated | **inherited from shell** |
+
+These differences exist by design — Apptainer is built for multi-user HPC. But they can cause **silent, hard-to-debug conflicts** when you convert a Docker image.
+
+---
+
+## Gotcha 1: system library conflicts
+
+Apptainer injects the host's `/usr/lib` and `/usr/lib64` so containers can use OSCAR's NVIDIA drivers and MPI stack. When the container's own libraries differ from the host versions you get:
+
+```
+/usr/lib64/libstdc++.so.6: version 'GLIBCXX_3.4.29' not found
+symbol lookup error: undefined symbol: ...
+```
+
+**Fixes:**
+
+```bash
+# Run with a clean environment — no host library injection
+apptainer exec --cleanenv mycontainer.sif python train.py
+
+# Docker-compatibility mode — disables automatic /usr bind
+apptainer exec --compat mycontainer.sif python train.py
+
+# Need GPU but still hitting conflicts? Combine flags
+apptainer exec --nv --cleanenv mycontainer.sif python train.py
+```
+
+---
+
+## Gotcha 2: your `$HOME` bleeds in
+
+Apptainer mounts your real home directory into the container by default. Things on the **host** that silently override what's in the image:
+
+- `~/.bashrc`, `~/.bash_profile` — your shell config activates inside
+- `~/.local/lib/python3.x/` — `pip install --user` packages take priority over the container's site-packages
+- `~/.conda` / `~/.bashrc` conda init — can activate a host environment and shadow the container's Python entirely
+- `~/.config/matplotlib`, `~/.jupyter`, etc. — tool configs from the host bleed in
+
+Two users running the **same `.sif`** can get different results because their home directories differ.
+
+---
+
+## Fixing `$HOME` conflicts
+
+```bash
+# Don't mount $HOME at all
+apptainer exec --no-home mycontainer.sif python train.py
+
+# Mount a clean scratch directory as $HOME instead
+apptainer exec --home /oscar/scratch/$USER/container_home \
+    mycontainer.sif python train.py
+
+# Maximum isolation — closest to Docker's default behaviour
+apptainer exec --no-home --cleanenv mycontainer.sif python train.py
+```
+
+> **Rule of thumb:** start with `--no-home --cleanenv` for reproducibility, then add back only the `--bind` paths and environment variables your workflow actually needs.
+
+---
+
 ## Thank you!
 
 Questions? Find us at **office hours**, on **`ccv-share`** Slack, or **support@ccv.brown.edu**

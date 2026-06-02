@@ -360,6 +360,74 @@ On OSCAR, the usual way to reach a notebook or RStudio server running inside a j
 - `docker image rm <image>` — delete a specific local image.
 
 
+## Gotchas When Moving Between Docker and Apptainer
+
+Docker and Apptainer share the same image format (OCI), so converting an image is usually seamless — but their runtime models differ in ways that can cause subtle, hard-to-debug failures.
+
+### Docker is fully isolated; Apptainer is not
+
+Docker gives each container its own root filesystem and its own user namespace. Nothing from the host leaks in unless you explicitly mount it. Apptainer takes the opposite approach: it is designed for multi-user HPC clusters where containers run **as you**, not as root, and it intentionally shares several parts of the host filesystem with the container.
+
+The two main areas where this causes problems are system libraries and your home directory.
+
+### System library conflicts: `/usr/lib` and `/usr/lib64`
+
+On OSCAR (and most HPC systems), Apptainer automatically binds the host's `/usr/lib` and `/usr/lib64` into the container — or at minimum it exposes the host's dynamic linker paths — so that GPU drivers and MPI libraries on the host are visible inside. This is intentional: it lets containers use OSCAR's NVIDIA drivers and InfiniBand stack without bundling them.
+
+The conflict arises when the **container's own libraries** (e.g., a specific version of `libstdc++`, `libc`, or a CUDA runtime) differ from the host versions that get injected. You may see errors like:
+
+```
+/usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.29' not found
+symbol lookup error: undefined symbol: ...
+```
+
+**Workarounds:**
+
+```bash
+# Run with a clean environment and no automatic library injection
+apptainer exec --cleanenv mycontainer.sif python train.py
+
+# Or run in Docker-compatibility mode (disables the automatic /usr bind)
+apptainer exec --compat mycontainer.sif python train.py
+
+# If you need GPU support but still hit library conflicts, try
+# explicitly binding only the driver stubs, not the full host lib tree
+apptainer exec --nv --cleanenv mycontainer.sif python train.py
+```
+
+### Home directory conflicts: `$HOME`
+
+Apptainer mounts your real `$HOME` directory into the container by default. This means:
+
+- **Dot-files and configs from the host bleed in.** A `~/.bashrc`, `~/.conda`, `~/.local/lib/python3.x`, or `~/.config/matplotlib` on the host can silently override what is baked into the container image, making results differ between users or machines even when they use the same `.sif` file.
+- **Packages installed with `pip install --user`** on the host land in `~/.local` and are picked up inside the container ahead of the container's own site-packages.
+- **Conda environments** initialized in `~/.bashrc` can activate inside the container and shadow the container's Python entirely.
+
+**Workarounds:**
+
+```bash
+# Prevent the home directory from being mounted
+apptainer exec --no-home mycontainer.sif python train.py
+
+# Or bind a clean scratch directory as $HOME instead
+apptainer exec --home /oscar/scratch/$USER/container_home mycontainer.sif python train.py
+
+# Combine both isolation flags for the most reproducible run
+apptainer exec --no-home --cleanenv mycontainer.sif python train.py
+```
+
+### Quick reference
+
+| Behaviour | Docker | Apptainer (default) |
+|---|---|---|
+| Runs as | root (remapped) | your own UID/GID |
+| Host `/usr/lib`, `/usr/lib64` | isolated | injected (for GPU/MPI) |
+| `$HOME` | isolated | mounted from host |
+| `/tmp` | isolated | shared with host |
+| Environment variables | isolated | inherited from host shell |
+
+When in doubt, add `--cleanenv --no-home` to get the closest equivalent to Docker's isolation model, then add back only the binds and environment variables your workflow actually needs.
+
 ## Further Reading
 
 - OSCAR — Intro to Apptainer: <https://docs.ccv.brown.edu/oscar/singularity-containers/untitled>
